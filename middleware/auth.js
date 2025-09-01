@@ -1,6 +1,13 @@
-// middleware/auth.js (updated)
-import Logger from "../lib/logger.js";
+// middleware/auth.js
+import jwt from "jsonwebtoken";
+import Logger from '../lib/logger.js';
+
 const authLogger = new Logger('auth-middleware');
+
+// Define the missing function
+function generateRequestId() {
+  return Date.now().toString(36) + Math.random().toString(36).substring(2);
+}
 
 export function requireAuth(req, res, next) {
   const requestId = generateRequestId();
