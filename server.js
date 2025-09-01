@@ -18,43 +18,66 @@ for (const envVar of requiredEnvVars) {
   }
 }
 
-// CORS configuration
+// CORS configuration - FIXED
 const allowedOrigins = [
   process.env.FRONTEND_URL || "http://localhost:3000",
   "https://play-gym-hub.vercel.app",
   "http://localhost:5173",
-  "https://gamehub-i770.onrender.com"
+  "https://gamehub-i770.onrender.com",
+  // Add more flexible patterns for development
+  /^http:\/\/localhost:\d+$/,
+  /^http:\/\/127\.0\.0\.1:\d+$/,
+  /^http:\/\/10\.\d+\.\d+\.\d+:\d+$/,  // Private network IPs
+  /^http:\/\/192\.168\.\d+\.\d+:\d+$/  // Local network IPs
 ];
 
-// Production vs Development CORS
+// Improved CORS configuration
 const corsOptions = {
   origin: function (origin, callback) {
-    // Allow requests with no origin (mobile apps, Postman, health checks)
+    console.log('🔍 CORS check for origin:', origin);
+    
+    // Allow requests with no origin (mobile apps, Postman, curl, health checks)
     if (!origin) {
-      console.log('Allowing request with no origin (health check/internal)');
+      console.log('✅ Allowing request with no origin (direct request)');
       return callback(null, true);
     }
     
-    // In development, allow all origins for easier debugging
+    // In development, be more permissive
     if (process.env.NODE_ENV === 'development') {
-      console.log('Development mode: Allowing origin:', origin);
+      console.log('✅ Development mode: Allowing origin:', origin);
       return callback(null, true);
     }
     
-    // In production, check against allowed origins
-    if (allowedOrigins.includes(origin)) {
-      console.log('Production mode: Allowing whitelisted origin:', origin);
+    // Check against allowed origins (both strings and regex patterns)
+    const isAllowed = allowedOrigins.some(allowedOrigin => {
+      if (typeof allowedOrigin === 'string') {
+        return allowedOrigin === origin;
+      } else if (allowedOrigin instanceof RegExp) {
+        return allowedOrigin.test(origin);
+      }
+      return false;
+    });
+    
+    if (isAllowed) {
+      console.log('✅ Origin allowed:', origin);
       return callback(null, true);
     }
     
-    // For Render internal health checks, allow internal IPs
-    if (origin.includes('10.') || origin.includes('127.0.0.1') || origin.includes('localhost')) {
-      console.log('Allowing internal/local origin:', origin);
+    console.log('❌ CORS blocked for origin:', origin);
+    console.log('📝 Allowed origins:', allowedOrigins);
+    
+    // For debugging, don't block in development-like environments
+    const isDevelopmentLike = origin.includes('localhost') || 
+                              origin.includes('127.0.0.1') || 
+                              origin.match(/10\.\d+\.\d+\.\d+/) ||
+                              origin.match(/192\.168\.\d+\.\d+/);
+    
+    if (isDevelopmentLike) {
+      console.log('🔧 Development-like origin, allowing:', origin);
       return callback(null, true);
     }
     
-    console.log('CORS blocked for origin:', origin);
-    return callback(new Error('Not allowed by CORS'));
+    return callback(new Error(`CORS blocked: Origin ${origin} not allowed`));
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
@@ -65,7 +88,10 @@ const corsOptions = {
     'Origin',
     'X-Requested-With',
     'Cache-Control',
-    'Pragma'
+    'Pragma',
+    'Access-Control-Allow-Headers',
+    'Access-Control-Allow-Methods',
+    'Access-Control-Allow-Origin'
   ],
   exposedHeaders: [
     'Content-Length',
@@ -73,12 +99,31 @@ const corsOptions = {
     'Cache-Control'
   ],
   maxAge: 86400, // 24 hours
-  optionsSuccessStatus: 200
+  optionsSuccessStatus: 200,
+  preflightContinue: false
 };
 
-// Middleware
+// Apply CORS middleware
 app.use(cors(corsOptions));
-app.options('*', cors(corsOptions)); // Handle preflight requests
+
+// Explicitly handle preflight requests
+app.use((req, res, next) => {
+  // Log all requests for debugging
+  console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} from ${req.headers.origin || 'no origin'}`);
+  
+  // Handle preflight OPTIONS requests
+  if (req.method === 'OPTIONS') {
+    console.log('🔧 Handling OPTIONS preflight request');
+    res.header('Access-Control-Allow-Origin', req.headers.origin || '*');
+    res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,PATCH,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Accept, Origin, X-Requested-With, Cache-Control, Pragma');
+    res.header('Access-Control-Allow-Credentials', 'true');
+    res.header('Access-Control-Max-Age', '86400');
+    return res.status(200).end();
+  }
+  
+  next();
+});
 
 // Body parsing middleware with size limits
 app.use(express.json({ 
@@ -92,15 +137,6 @@ app.use(express.json({
   }
 }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// Request logging middleware (only log in development or if LOG_REQUESTS is true)
-if (process.env.NODE_ENV === 'development' || process.env.LOG_REQUESTS === 'true') {
-  app.use((req, res, next) => {
-    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path}`);
-    console.log('Origin:', req.headers.origin || 'No origin');
-    next();
-  });
-}
 
 // Security headers
 app.use((req, res, next) => {
@@ -121,13 +157,14 @@ app.get("/health", (req, res) => {
     timestamp: new Date().toISOString(),
     uptime: process.uptime(),
     environment: process.env.NODE_ENV || 'development',
-    version: process.env.npm_package_version || '1.0.0'
+    version: process.env.npm_package_version || '1.0.0',
+    cors: {
+      origin: req.headers.origin || 'no origin',
+      allowedOrigins: allowedOrigins.map(origin => 
+        origin instanceof RegExp ? origin.toString() : origin
+      )
+    }
   };
-  
-  // Only include sensitive info in development
-  if (process.env.NODE_ENV === 'development') {
-    healthCheck.allowedOrigins = allowedOrigins;
-  }
   
   res.status(200).json(healthCheck);
 });
@@ -141,6 +178,10 @@ app.get("/", (req, res) => {
     endpoints: {
       health: "/health",
       subscriptions: "/api/subscriptions"
+    },
+    cors: {
+      requestOrigin: req.headers.origin || 'no origin',
+      timestamp: new Date().toISOString()
     }
   });
 });
@@ -167,16 +208,20 @@ app.use((err, req, res, next) => {
     stack: err.stack,
     url: req.originalUrl,
     method: req.method,
+    origin: req.headers.origin,
     ip: req.ip,
     userAgent: req.get('User-Agent')
   });
   
   // Handle specific error types
-  if (err.message === 'Not allowed by CORS') {
+  if (err.message.includes('CORS blocked') || err.message === 'Not allowed by CORS') {
     return res.status(403).json({ 
       error: "CORS policy violation",
-      message: "Origin not allowed",
+      message: err.message,
       yourOrigin: req.headers.origin || 'No origin provided',
+      allowedOrigins: allowedOrigins.map(origin => 
+        origin instanceof RegExp ? origin.toString() : origin
+      ),
       errorId
     });
   }
@@ -212,13 +257,15 @@ const connectDB = async (retries = 5, delay = 5000) => {
       console.log(`Attempting MongoDB connection (attempt ${attempt}/${retries})...`);
       
       await mongoose.connect(process.env.MONGO_URI, {
-        serverSelectionTimeoutMS: 10000, // Increased timeout
-        socketTimeoutMS: 45000,
-        maxPoolSize: 10,
-        bufferCommands: false,
-        bufferMaxEntries: 0
+        serverSelectionTimeoutMS: 10000, // Keep trying to send operations for 10 seconds
+        socketTimeoutMS: 45000, // Close sockets after 45 seconds of inactivity
+        maxPoolSize: 10, // Maintain up to 10 socket connections
+        minPoolSize: 5, // Maintain at least 5 socket connections
+        bufferCommands: false, // Disable mongoose buffering
+        maxIdleTimeMS: 30000, // Close connections after 30 seconds of inactivity
+        family: 4 // Use IPv4, skip trying IPv6
       });
-      
+            
       console.log("✅ MongoDB connected successfully");
       
       // Set up mongoose connection event listeners
@@ -240,7 +287,6 @@ const connectDB = async (retries = 5, delay = 5000) => {
         console.log("✅ Background jobs scheduled");
       } catch (jobError) {
         console.error('⚠️ Failed to start background jobs:', jobError.message);
-        // Don't fail the entire startup for background job errors
       }
       
       return true;
@@ -251,7 +297,7 @@ const connectDB = async (retries = 5, delay = 5000) => {
       if (attempt < retries) {
         console.log(`Retrying in ${delay / 1000} seconds...`);
         await new Promise(resolve => setTimeout(resolve, delay));
-        delay *= 1.5; // Exponential backoff
+        delay *= 1.5;
       }
     }
   }
@@ -275,12 +321,7 @@ const startServer = async () => {
       console.log(`🚀 Server running on port ${PORT}`);
       console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log(`🔍 Health check: http://localhost:${PORT}/health`);
-      
-      if (process.env.NODE_ENV === 'development') {
-        console.log(`✅ CORS configured for development (allowing all origins)`);
-      } else {
-        console.log(`🔒 CORS configured for production`);
-      }
+      console.log(`🔒 CORS configured with allowed origins:`, allowedOrigins);
     });
 
     // Handle server errors
@@ -296,7 +337,6 @@ const startServer = async () => {
     const gracefulShutdown = async (signal) => {
       console.log(`\n📡 ${signal} received. Initiating graceful shutdown...`);
       
-      // Stop accepting new connections
       server.close(async () => {
         console.log('🔄 HTTP server closed');
         
@@ -311,7 +351,6 @@ const startServer = async () => {
         }
       });
       
-      // Force shutdown if graceful shutdown takes too long
       setTimeout(() => {
         console.error('⏰ Graceful shutdown timed out, forcing exit');
         process.exit(1);
@@ -321,7 +360,7 @@ const startServer = async () => {
     // Register shutdown handlers
     process.on('SIGINT', () => gracefulShutdown('SIGINT'));
     process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
-    process.on('SIGUSR2', () => gracefulShutdown('SIGUSR2')); // For nodemon
+    process.on('SIGUSR2', () => gracefulShutdown('SIGUSR2'));
 
     // Handle uncaught exceptions
     process.on('uncaughtException', (error) => {
