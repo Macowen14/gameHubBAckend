@@ -69,6 +69,7 @@ const corsOptions = {
     // For debugging, don't block in development-like environments
     const isDevelopmentLike = origin.includes('localhost') || 
                               origin.includes('127.0.0.1') || 
+                              origin.includes('http://10.150.54.58:3000/') ||
                               origin.match(/10\.\d+\.\d+\.\d+/) ||
                               origin.match(/192\.168\.\d+\.\d+/);
     
